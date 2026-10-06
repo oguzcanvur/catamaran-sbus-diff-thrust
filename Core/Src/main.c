@@ -5,15 +5,21 @@
  *  S.BUS (R9DS)  -> PA10 USART1_RX (100k, 8E2, RX tersleme aktif, DMA + Idle)
  *  Sol ESC       -> PA0  TIM2_CH1  (50 Hz, 1 µs çözünürlük)
  *  Sağ ESC       -> PA1  TIM2_CH2
- *  LD2 (PA5)     -> Yanık: link OK | Yanıp söner: failsafe / sinyal yok | Hızlı: arming
+ *  Telemetri     -> PA2/PA3 LPUART1 (ST-LINK sanal COM, 115200 8N1)
+ *  Arm anahtarı  -> S.BUS CH10 (arm_switch.c)
+ *  LD2 (PA5)     -> Sabit: ARMED | Saniyede bir çakma: DISARM | Yavaş: sinyal yok | Hızlı: başlatma
  */
 #include "main.h"
 #include "boat_config.h"
 #include "sbus.h"
 #include "catamaran_mixer.h"
 #include "motor_pwm.h"
+#include "telemetry.h"
+#include "settings.h"
+#include "arm_switch.h"
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef hlpuart1;
 DMA_HandleTypeDef  hdma_usart1_rx;
 TIM_HandleTypeDef  htim2;
 
@@ -22,6 +28,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_LPUART1_UART_Init(void);
 
 int main(void)
 {
@@ -32,38 +39,81 @@ int main(void)
     MX_DMA_Init();
     MX_TIM2_Init();
     MX_USART1_UART_Init();
+    MX_LPUART1_UART_Init();
 
-    /* Önce PWM'i nötrde başlat (ESC'ler hiçbir zaman tanımsız sinyal görmesin) */
+    /* Kalıcı motor nötrlerini yükle, sonra PWM'i nötrde başlat
+       (ESC'ler hiçbir zaman tanımsız sinyal görmesin) */
+    settings_t cfg;
+    settings_load(&cfg);
+    motor_pwm_set_neutrals(cfg.left_neutral_us, cfg.right_neutral_us);
     motor_pwm_init(&htim2);
     sbus_init(&huart1);
+    telemetry_init(&hlpuart1);
 
     const uint32_t boot_ms = HAL_GetTick();
-    sbus_data_t    rc;
+    sbus_data_t    rc  = {0};
     uint32_t       led_ms = 0;
 
     while (1)
     {
-        const uint32_t now = HAL_GetTick();
-        const bool     arming = (now - boot_ms) < ESC_ARM_TIME_MS;
-        const bool     fresh  = sbus_get_frame(&rc);
-        const bool     link   = sbus_link_ok(now);
+        const uint32_t now     = HAL_GetTick();
+        const bool     booting = (now - boot_ms) < ESC_ARM_TIME_MS;
+        const bool     fresh   = sbus_get_frame(&rc);
+        const bool     link    = sbus_link_ok(now);
+        const arm_state_t arm  = arm_update(now, link, &rc);
 
-        if (arming || !link) {
-            /* Arming süresi, sinyal kaybı (timeout) veya alıcı failsafe -> DUR */
-            motor_pwm_neutral();
-        } else if (fresh) {
-            motor_cmd_t cmd = catamaran_mixer(rc.us[SBUS_CH_THROTTLE],
-                                              rc.us[SBUS_CH_STEERING]);
-            motor_pwm_set(&cmd);
+        /* PC'den yeni nötr: uygula + flash'a kaydet (silme ~20 ms, PWM donanımda sürer) */
+        uint16_t nl, nr;
+        if (telemetry_take_neutral_request(&nl, &nr)) {
+            settings_t ns = { nl, nr };
+            if (settings_valid(&ns) && settings_save(&ns)) {
+                motor_pwm_set_neutrals(nl, nr);
+            }
         }
 
+        motor_cmd_t    test;
+        const bool     testing = !booting && telemetry_get_test(now, &test);
+        const char    *state;
+
+        if (booting) {
+            /* Açılış: ESC'ler nötr sinyali görüp başlasın */
+            motor_pwm_neutral();
+            state = "BASLAT";
+        } else if (testing) {
+            /* PC'den motor nötr testi: değerler doğrudan ESC'ye */
+            motor_pwm_set_raw(&test);
+            state = "TEST";
+        } else if (!link) {
+            /* Sinyal kaybı (timeout) veya alıcı failsafe -> DUR */
+            motor_pwm_neutral();
+            state = "KAYIP";
+        } else if (arm != ARM_ARMED) {
+            /* Arm anahtarı kapalı veya güvenlik kilidi -> DUR */
+            motor_pwm_neutral();
+            state = (arm == ARM_WAITING) ? "ARM?" : "DISARM";
+        } else {
+            if (fresh) {
+                motor_cmd_t cmd = catamaran_mixer(rc.us[SBUS_CH_THROTTLE], rc.us[SBUS_CH_STEERING]);
+                motor_pwm_set(&cmd);
+            }
+            state = "ARMED";
+        }
+
+        const motor_cmd_t out = motor_pwm_get_output();
+        uint16_t neu_l, neu_r;
+        motor_pwm_get_neutrals(&neu_l, &neu_r);
+        telemetry_task(now, &rc, &out, state, neu_l, neu_r);
+
         /* Durum LED'i */
-        if (arming) {
+        if (booting) {
             if (now - led_ms >= 50u)  { led_ms = now; HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); }
         } else if (!link) {
             if (now - led_ms >= 250u) { led_ms = now; HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin); }
-        } else {
+        } else if (arm == ARM_ARMED || testing) {
             HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+        } else {
+            /* Disarm: saniyede bir kısa çakma */
+            HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, ((now % 1000u) < 80u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         }
     }
 }
@@ -146,6 +196,24 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+ * LPUART1: Nucleo'da ST-LINK sanal COM portuna bağlı (PA2 TX / PA3 RX): telemetri + PC komutları.
+ */
+static void MX_LPUART1_UART_Init(void)
+{
+    hlpuart1.Instance                    = LPUART1;
+    hlpuart1.Init.BaudRate               = TELEMETRY_BAUD;
+    hlpuart1.Init.WordLength             = UART_WORDLENGTH_8B;
+    hlpuart1.Init.StopBits               = UART_STOPBITS_1;
+    hlpuart1.Init.Parity                 = UART_PARITY_NONE;
+    hlpuart1.Init.Mode                   = UART_MODE_TX_RX;
+    hlpuart1.Init.HwFlowCtl              = UART_HWCONTROL_NONE;
+    hlpuart1.Init.OneBitSampling         = UART_ONE_BIT_SAMPLE_DISABLE;
+    hlpuart1.Init.ClockPrescaler         = UART_PRESCALER_DIV1;
+    hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+    if (HAL_UART_Init(&hlpuart1) != HAL_OK) Error_Handler();
+}
+
+/**
  * TIM2: 170 MHz / (169+1) = 1 MHz (1 µs tick), ARR = 19999 -> 20 ms (50 Hz).
  */
 static void MX_TIM2_Init(void)
@@ -187,6 +255,20 @@ static void MX_TIM2_Init(void)
     g.Speed     = GPIO_SPEED_FREQ_LOW;
     g.Alternate = GPIO_AF1_TIM2;
     HAL_GPIO_Init(GPIOA, &g);
+}
+
+/* ---------------- UART geri çağırmaları: ilgili modüle yönlendir ---------------- */
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+    if (huart == &huart1)        sbus_on_rx_event(Size);
+    else if (huart == &hlpuart1) telemetry_on_rx_event(Size);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart1)        sbus_on_error();
+    else if (huart == &hlpuart1) telemetry_on_error();
 }
 
 void Error_Handler(void)

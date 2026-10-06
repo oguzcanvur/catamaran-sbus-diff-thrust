@@ -30,4 +30,8 @@ bool sbus_get_frame(sbus_data_t *out);
 /* Bağlantı sağlıklı mı? (timeout + failsafe bayrağı) */
 bool sbus_link_ok(uint32_t now_ms);
 
+/* HAL UART geri çağırmalarından yönlendirilir (main.c) */
+void sbus_on_rx_event(uint16_t size);
+void sbus_on_error(void);
+
 #endif /* SBUS_H */

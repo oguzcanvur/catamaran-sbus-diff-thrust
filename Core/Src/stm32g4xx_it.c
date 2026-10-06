@@ -35,3 +35,8 @@ void USART1_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart1);
 }
+
+void LPUART1_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&hlpuart1);
+}

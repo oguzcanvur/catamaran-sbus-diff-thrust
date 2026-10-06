@@ -13,6 +13,7 @@
  */
 #include "sbus.h"
 #include "boat_config.h"
+#include "rc_calibration.h"
 #include <string.h>
 
 static UART_HandleTypeDef *s_huart;
@@ -30,19 +31,38 @@ static void sbus_start_rx(void)
     }
 }
 
-static uint16_t sbus_raw_to_us(uint16_t raw)
+typedef struct {
+    int32_t min, center, max;
+} sbus_cal_t;
+
+/* CH1/CH2 ölçülmüş kalibrasyonla, diğer kanallar standart S.BUS aralığıyla çevrilir */
+static const sbus_cal_t s_cal_default = { SBUS_RAW_MIN, SBUS_RAW_CENTER, SBUS_RAW_MAX };
+static const sbus_cal_t s_cal_ch1     = { CAL_CH1_MIN,  CAL_CH1_CENTER,  CAL_CH1_MAX  };
+static const sbus_cal_t s_cal_ch2     = { CAL_CH2_MIN,  CAL_CH2_CENTER,  CAL_CH2_MAX  };
+
+static const sbus_cal_t *sbus_cal_for(uint8_t ch)
+{
+    if (ch == 0u) return &s_cal_ch1;
+    if (ch == 1u) return &s_cal_ch2;
+    return &s_cal_default;
+}
+
+/* Parçalı doğrusal: min -> 1000, center -> 1500, max -> 2000 µs (yuvarlamalı) */
+static uint16_t sbus_raw_to_us(uint16_t raw, const sbus_cal_t *c)
 {
     int32_t v = (int32_t)raw;
-    if (v < SBUS_RAW_MIN) v = SBUS_RAW_MIN;
-    if (v > SBUS_RAW_MAX) v = SBUS_RAW_MAX;
+    if (v < c->min) v = c->min;
+    if (v > c->max) v = c->max;
 
     int32_t us;
-    if (v >= SBUS_RAW_CENTER) {
-        us = PWM_NEUTRAL_US + ((v - SBUS_RAW_CENTER) * 500 + (SBUS_RAW_MAX - SBUS_RAW_CENTER) / 2)
-                              / (SBUS_RAW_MAX - SBUS_RAW_CENTER);
+    if (v >= c->center) {
+        int32_t span = c->max - c->center;
+        us = (span > 0) ? PWM_NEUTRAL_US + ((v - c->center) * 500 + span / 2) / span
+                        : PWM_NEUTRAL_US;
     } else {
-        us = PWM_NEUTRAL_US - ((SBUS_RAW_CENTER - v) * 500 + (SBUS_RAW_CENTER - SBUS_RAW_MIN) / 2)
-                              / (SBUS_RAW_CENTER - SBUS_RAW_MIN);
+        int32_t span = c->center - c->min;
+        us = (span > 0) ? PWM_NEUTRAL_US - ((c->center - v) * 500 + span / 2) / span
+                        : PWM_NEUTRAL_US;
     }
     return (uint16_t)us;
 }
@@ -67,7 +87,7 @@ static bool sbus_decode(const uint8_t *f)
         bits    -= 11u;
 
         s_data.raw[ch] = raw;
-        s_data.us[ch]  = sbus_raw_to_us(raw);
+        s_data.us[ch]  = sbus_raw_to_us(raw, sbus_cal_for(ch));
     }
 
     s_data.frame_lost = (f[23] & 0x04u) != 0u;
@@ -102,12 +122,10 @@ bool sbus_link_ok(uint32_t now_ms)
     return (now_ms - s_data.last_rx_tick) < SBUS_TIMEOUT_MS;
 }
 
-/* ---------------- HAL geri çağırmaları ---------------- */
+/* ---------------- HAL geri çağırmalarından (main.c) ---------------- */
 
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+void sbus_on_rx_event(uint16_t Size)
 {
-    if (huart != s_huart) return;
-
     if (Size == SBUS_FRAME_LEN && sbus_decode(s_rx_buf)) {
         s_data.last_rx_tick = HAL_GetTick();
         s_data.frame_count++;
@@ -119,11 +137,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     sbus_start_rx();
 }
 
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+void sbus_on_error(void)
 {
-    if (huart != s_huart) return;
     /* Parity/Frame/Noise/Overrun: alımı sıfırla ve yeniden başlat */
     s_data.error_count++;
-    HAL_UART_AbortReceive(huart);
+    HAL_UART_AbortReceive(s_huart);
     sbus_start_rx();
 }

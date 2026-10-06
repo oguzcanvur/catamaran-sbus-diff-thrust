@@ -15,6 +15,7 @@ extern "C" {
 #define LD2_GPIO_Port   GPIOA
 
 extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef hlpuart1;
 extern DMA_HandleTypeDef  hdma_usart1_rx;
 extern TIM_HandleTypeDef  htim2;
 

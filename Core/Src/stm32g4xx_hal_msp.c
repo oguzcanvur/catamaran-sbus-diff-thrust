@@ -21,6 +21,30 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim)
 
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
+    if (huart->Instance == LPUART1) {
+        RCC_PeriphCLKInitTypeDef lp = {0};
+        lp.PeriphClockSelection    = RCC_PERIPHCLK_LPUART1;
+        lp.Lpuart1ClockSelection   = RCC_LPUART1CLKSOURCE_PCLK1;
+        if (HAL_RCCEx_PeriphCLKConfig(&lp) != HAL_OK) Error_Handler();
+
+        __HAL_RCC_LPUART1_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+
+        /* PA2 -> LPUART1_TX, PA3 -> LPUART1_RX (AF12), ST-LINK VCP */
+        GPIO_InitTypeDef t = {0};
+        t.Pin       = GPIO_PIN_2 | GPIO_PIN_3;
+        t.Mode      = GPIO_MODE_AF_PP;
+        t.Pull      = GPIO_PULLUP;
+        t.Speed     = GPIO_SPEED_FREQ_LOW;
+        t.Alternate = GPIO_AF12_LPUART1;
+        HAL_GPIO_Init(GPIOA, &t);
+
+        /* S.BUS'tan düşük öncelik */
+        HAL_NVIC_SetPriority(LPUART1_IRQn, 3, 0);
+        HAL_NVIC_EnableIRQ(LPUART1_IRQn);
+        return;
+    }
+
     if (huart->Instance != USART1) return;
 
     RCC_PeriphCLKInitTypeDef pclk = {0};

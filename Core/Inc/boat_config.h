@@ -26,13 +26,29 @@
 #define SBUS_CH_STEERING        0u      /* Kanal 1 - Aileron  (sağ kol yatay) */
 #define SBUS_CH_THROTTLE        1u      /* Kanal 2 - Elevator (sağ kol dikey) */
 
-/* Ham S.BUS değer -> µs dönüşümü (R9DS için gerekirse kalibre edin) */
+/* Ham S.BUS -> µs varsayılan aralığı (CH3..CH16). CH1/CH2 için rc_calibration.h kullanılır */
 #define SBUS_RAW_MIN            172
 #define SBUS_RAW_CENTER         992
 #define SBUS_RAW_MAX            1811
 
+/* ---------------- Arm anahtarı ---------------- */
+#define ARM_SWITCH_CH           9u      /* Kanal 10 (0 tabanlı indeks)                    */
+#define ARM_SWITCH_ON_US        1600u   /* Bu değerin üstü: ARM                           */
+#define ARM_SWITCH_OFF_US       1400u   /* Bu değerin altı: DISARM (arası histerezis)     */
+#define ARM_SWITCH_REVERSE      0       /* Anahtar ters yönde çalışıyorsa 1 yapın         */
+#define ARM_LINK_LOSS_DISARM_MS 1000u   /* Sinyal bundan uzun kesilirse disarm            */
+
 /* ---------------- Güvenlik ---------------- */
 #define SBUS_TIMEOUT_MS         100u    /* Bu süre geçerli paket yoksa -> nötr */
 #define ESC_ARM_TIME_MS         3000u   /* Açılışta ESC'lere sabit nötr süresi */
+
+/* ---------------- Telemetri (ST-LINK sanal COM portu) ---------------- */
+#define TELEMETRY_BAUD          115200u
+#define TELEMETRY_PERIOD_MS     100u    /* 10 satır/s */
+
+/* ---------------- Motor nötr testi (PC'den "T <sol> <sag>" komutu) ---------------- */
+#define TEST_TIMEOUT_MS         300u    /* Komut kesilirse test modu kapanır -> nötr */
+#define TEST_MIN_US             1350u   /* Test sırasında izin verilen aralık */
+#define TEST_MAX_US             1650u
 
 #endif /* BOAT_CONFIG_H */

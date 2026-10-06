@@ -12,5 +12,6 @@ void PendSV_Handler(void);
 void SysTick_Handler(void);
 void DMA1_Channel1_IRQHandler(void);
 void USART1_IRQHandler(void);
+void LPUART1_IRQHandler(void);
 
 #endif /* __STM32G4xx_IT_H */
