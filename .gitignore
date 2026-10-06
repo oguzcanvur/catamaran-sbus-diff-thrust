@@ -1,0 +1,15 @@
+# Derleme çıktıları
+build/
+Debug/
+Release/
+
+# STM32CubeIDE / Eclipse çalışma dosyaları
+.settings/
+*.launch
+.metadata/
+
+# Editör / işletim sistemi
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
